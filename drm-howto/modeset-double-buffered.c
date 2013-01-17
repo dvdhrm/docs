@@ -257,7 +257,7 @@ static int modeset_find_crtc(int fd, drmModeRes *res, drmModeConnector *conn,
 {
 	drmModeEncoder *enc;
 	unsigned int i, j;
-	uint32_t crtc;
+	int32_t crtc;
 	struct modeset_dev *iter;
 
 	/* iterate all encoders of this connector */
