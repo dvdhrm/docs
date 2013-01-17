@@ -324,6 +324,8 @@ static int modeset_setup_dev(int fd, drmModeRes *res, drmModeConnector *conn,
  * trying each encoder that is available and looking for a CRTC that this
  * encoder can work with. If we find the first working combination, we are happy
  * and write it into the @dev structure.
+ * But before iterating all available encoders, we first try the currently
+ * active encoder+crtc on a connector to avoid a full modeset.
  *
  * However, before we can use a CRTC we must make sure that no other device,
  * that we setup previously, is already using this CRTC. Remember, we can only
@@ -340,7 +342,36 @@ static int modeset_find_crtc(int fd, drmModeRes *res, drmModeConnector *conn,
 	int32_t crtc;
 	struct modeset_dev *iter;
 
-	/* iterate all encoders of this connector */
+	/* first try the currently conected encoder+crtc */
+	if (conn->encoder_id)
+		enc = drmModeGetEncoder(fd, conn->encoder_id);
+	else
+		enc = NULL;
+
+	if (enc) {
+		if (enc->crtc_id) {
+			crtc = enc->crtc_id;
+			for (iter = modeset_list; iter; iter = iter->next) {
+				if (iter->crtc == crtc) {
+					crtc = -1;
+					break;
+				}
+			}
+
+			if (crtc >= 0) {
+				drmModeFreeEncoder(enc);
+				dev->crtc = crtc;
+				return 0;
+			}
+		}
+
+		drmModeFreeEncoder(enc);
+	}
+
+	/* If the connector is not currently bound to an encoder or if the
+	 * encoder+crtc is already used by another connector (actually unlikely
+	 * but lets be safe), iterate all other available encoders to find a
+	 * matching CRTC. */
 	for (i = 0; i < conn->count_encoders; ++i) {
 		enc = drmModeGetEncoder(fd, conn->encoders[i]);
 		if (!enc) {
