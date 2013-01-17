@@ -84,6 +84,12 @@ static int modeset_open(int *out, const char *node)
  * they aren't important for this example.
  * The modeset-double-buffered.c example used exactly the same fields but as
  * local variables in modeset_draw().
+ *
+ * The \pflip_pending variable is true when a page-flip is currently pending,
+ * that is, the kernel will flip buffers on the next vertical blank. The
+ * \cleanup variable is true if the device is currently cleaned up and no more
+ * pageflips should be scheduled. They are used to synchronize the cleanup
+ * routines.
  */
 
 struct modeset_buf {
@@ -106,6 +112,9 @@ struct modeset_dev {
 	uint32_t conn;
 	uint32_t crtc;
 	drmModeCrtc *saved_crtc;
+
+	bool pflip_pending;
+	bool cleanup;
 
 	uint8_t r, g, b;
 	bool r_up, g_up, b_up;
@@ -468,6 +477,9 @@ out_return:
 /*
  * modeset_page_flip_event() is a callback-helper for modeset_draw() below.
  * Please see modeset_draw() for more information.
+ *
+ * Note that this does nothing if the device is currently cleaned up. This
+ * allows to wait for outstanding page-flips during cleanup.
  */
 
 static void modeset_page_flip_event(int fd, unsigned int frame,
@@ -476,7 +488,9 @@ static void modeset_page_flip_event(int fd, unsigned int frame,
 {
 	struct modeset_dev *dev = data;
 
-	modeset_draw_dev(fd, dev);
+	dev->pflip_pending = false;
+	if (!dev->cleanup)
+		modeset_draw_dev(fd, dev);
 }
 
 /*
@@ -653,35 +667,63 @@ static void modeset_draw_dev(int fd, struct modeset_dev *dev)
 
 	ret = drmModePageFlip(fd, dev->crtc, buf->fb,
 			      DRM_MODE_PAGE_FLIP_EVENT, dev);
-	if (ret)
+	if (ret) {
 		fprintf(stderr, "cannot flip CRTC for connector %u (%d): %m\n",
 			dev->conn, errno);
-	else
+	} else {
 		dev->front_buf ^= 1;
+		dev->pflip_pending = true;
+	}
 }
 
 /*
- * modeset_cleanup() stays the same.
+ * modeset_cleanup() stays mostly the same. However, before resetting a CRTC to
+ * its previous state, we wait for any outstanding page-flip to complete. This
+ * isn't strictly neccessary, however, some DRM drivers are known to be buggy if
+ * we call drmModeSetCrtc() if there is a pending page-flip.
+ * Furthermore, we don't want any pending page-flips when our application exist.
+ * Because another application might pick up the DRM device and try to schedule
+ * their own page-flips which might then fail as long as our page-flip is
+ * pending.
+ * So lets be safe here and simply wait for any page-flips to complete. This is
+ * a blocking operation, but it's mostly just <16ms so we can ignore that.
  */
 
 static void modeset_cleanup(int fd)
 {
 	struct modeset_dev *iter;
+	drmEventContext ev;
+	int ret;
+
+	/* init variables */
+	memset(&ev, 0, sizeof(ev));
+	ev.version = DRM_EVENT_CONTEXT_VERSION;
+	ev.page_flip_handler = modeset_page_flip_event;
 
 	while (modeset_list) {
 		/* remove from global list */
 		iter = modeset_list;
 		modeset_list = iter->next;
 
+		/* if a pageflip is pending, wait for it to complete */
+		iter->cleanup = true;
+		fprintf(stderr, "wait for pending page-flip to complete...\n");
+		while (iter->pflip_pending) {
+			ret = drmHandleEvent(fd, &ev);
+			if (ret)
+				break;
+		}
+
 		/* restore saved CRTC configuration */
-		drmModeSetCrtc(fd,
-			       iter->saved_crtc->crtc_id,
-			       iter->saved_crtc->buffer_id,
-			       iter->saved_crtc->x,
-			       iter->saved_crtc->y,
-			       &iter->conn,
-			       1,
-			       &iter->saved_crtc->mode);
+		if (!iter->pflip_pending)
+			drmModeSetCrtc(fd,
+				       iter->saved_crtc->crtc_id,
+				       iter->saved_crtc->buffer_id,
+				       iter->saved_crtc->x,
+				       iter->saved_crtc->y,
+				       &iter->conn,
+				       1,
+				       &iter->saved_crtc->mode);
 		drmModeFreeCrtc(iter->saved_crtc);
 
 		/* destroy framebuffers */
