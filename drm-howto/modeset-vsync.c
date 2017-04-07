@@ -559,7 +559,9 @@ static void modeset_draw(int fd)
 	FD_ZERO(&fds);
 	memset(&v, 0, sizeof(v));
 	memset(&ev, 0, sizeof(ev));
-	ev.version = DRM_EVENT_CONTEXT_VERSION;
+	/* Set this to only the latest version you support. Version 2
+	 * introduced the page_flip_handler, so we use that. */
+	ev.version = 2;
 	ev.page_flip_handler = modeset_page_flip_event;
 
 	/* redraw all outputs */
