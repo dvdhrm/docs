@@ -2,10 +2,6 @@
  * modeset-atomic - DRM Atomic-API Modesetting Example
  * Written 2019 by Ezequiel Garcia <ezequiel@collabora.com>
  *
- * Based on:
- * modeset-vsync - DRM Double-Buffered VSync'ed Modesetting Example
- * Written 2012 by David Herrmann <dh.herrmann@googlemail.com>
- *
  * Dedicated to the Public Domain.
  */
 
@@ -1205,5 +1201,4 @@ out_return:
  * documentation or projects.
  *
  *  - Hosted on http://github.com/dvdhrm/docs
- *  - Written by David Herrmann <dh.herrmann@googlemail.com>
  */

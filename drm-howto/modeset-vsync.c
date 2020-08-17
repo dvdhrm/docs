@@ -1,7 +1,7 @@
 /*
  * modeset - DRM Double-Buffered VSync'ed Modesetting Example
  *
- * Written 2012 by David Herrmann <dh.herrmann@googlemail.com>
+ * Written 2012 by David Rheinsberg <david.rheinsberg@gmail.com>
  * Dedicated to the Public Domain.
  */
 
@@ -769,5 +769,5 @@ static void modeset_cleanup(int fd)
  * documentation or projects.
  *
  *  - Hosted on http://github.com/dvdhrm/docs
- *  - Written by David Herrmann <dh.herrmann@googlemail.com>
+ *  - Written by David Rheinsberg <david.rheinsberg@gmail.com>
  */
