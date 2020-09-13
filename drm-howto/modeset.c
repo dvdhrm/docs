@@ -45,9 +45,9 @@ static int modeset_find_crtc(int fd, drmModeRes *res, drmModeConnector *conn,
 			     struct modeset_dev *dev);
 static int modeset_create_fb(int fd, struct modeset_dev *dev);
 static int modeset_setup_dev(int fd, drmModeRes *res, drmModeConnector *conn,
-			     struct modeset_dev *dev);
+			     struct modeset_dev *dev, drmModeModeInfo *mode);
 static int modeset_open(int *out, const char *node);
-static int modeset_prepare(int fd);
+static int modeset_prepare(int fd, drmModeModeInfo *mode);
 static void modeset_draw(void);
 static void modeset_cleanup(int fd);
 
@@ -158,7 +158,7 @@ struct modeset_dev {
 	drmModeModeInfo mode;
 	uint32_t fb;
 	uint32_t conn;
-	uint32_t crtc;
+	int32_t crtc;
 	drmModeCrtc *saved_crtc;
 };
 
@@ -168,12 +168,12 @@ static struct modeset_dev *modeset_list = NULL;
  * So as next step we need to actually prepare all connectors that we find. We
  * do this in this little helper function:
  *
- * modeset_prepare(fd): This helper function takes the DRM fd as argument and
- * then simply retrieves the resource-info from the device. It then iterates
- * through all connectors and calls other helper functions to initialize this
- * connector (described later on).
- * If the initialization was successful, we simply add this object as new device
- * into the global modeset device list.
+ * modeset_prepare(fd, drmModeModeInfo *mode): This helper function takes the
+ * DRM fd as argument and then simply retrieves the resource-info from the
+ * device. It then iterates through all connectors and calls other helper
+ * functions to initialize this connector (described later on). If the
+ * initialization was successful, we simply add this object as new device into
+ * the global modeset device list.
  *
  * The resource-structure contains a list of all connector-IDs. We use the
  * helper function drmModeGetConnector() to retrieve more information on each
@@ -183,11 +183,11 @@ static struct modeset_dev *modeset_list = NULL;
  * unused and no monitor is plugged in. So we can ignore this connector.
  */
 
-static int modeset_prepare(int fd)
+static int modeset_prepare(int fd, drmModeModeInfo *mode)
 {
 	drmModeRes *res;
 	drmModeConnector *conn;
-	unsigned int i;
+	int i;
 	struct modeset_dev *dev;
 	int ret;
 
@@ -215,7 +215,7 @@ static int modeset_prepare(int fd)
 		dev->conn = conn->connector_id;
 
 		/* call helper function to prepare this connector */
-		ret = modeset_setup_dev(fd, res, conn, dev);
+		ret = modeset_setup_dev(fd, res, conn, dev, mode);
 		if (ret) {
 			if (ret != -ENOENT) {
 				errno = -ret;
@@ -249,6 +249,10 @@ static int modeset_prepare(int fd)
  *     highest resolution.
  *     A more sophisticated mode-selection should be done in real applications,
  *     though.
+ *   * If the mode argument is not NULL, it is used in place of the first
+ *     available mode. Contrary to these, this mode may or may not be
+ *     supported by the hardware. If not, we will only find it out when we
+ *     actually try to use in main() by calling drmModeSetCrtc().
  *   * Then we need to find an CRTC that can drive this connector. A CRTC is an
  *     internal resource of each graphics-card. The number of CRTCs controls how
  *     many connectors can be controlled indepedently. That is, a graphics-cards
@@ -268,7 +272,7 @@ static int modeset_prepare(int fd)
  */
 
 static int modeset_setup_dev(int fd, drmModeRes *res, drmModeConnector *conn,
-			     struct modeset_dev *dev)
+			     struct modeset_dev *dev, drmModeModeInfo *mode)
 {
 	int ret;
 
@@ -279,17 +283,25 @@ static int modeset_setup_dev(int fd, drmModeRes *res, drmModeConnector *conn,
 		return -ENOENT;
 	}
 
-	/* check if there is at least one valid mode */
-	if (conn->count_modes == 0) {
-		fprintf(stderr, "no valid mode for connector %u\n",
-			conn->connector_id);
-		return -EFAULT;
+	/* use given mode, if passed */
+	if (mode) {
+		memcpy(&dev->mode, mode, sizeof(dev->mode));
+		dev->width = dev->mode.hdisplay;
+		dev->height = dev->mode.vdisplay;
 	}
+	else {
+		/* check if there is at least one valid mode */
+		if (conn->count_modes == 0) {
+			fprintf(stderr, "no valid mode for connector %u\n",
+				conn->connector_id);
+			return -EFAULT;
+		}
 
-	/* copy the mode information into our device structure */
-	memcpy(&dev->mode, &conn->modes[0], sizeof(dev->mode));
-	dev->width = conn->modes[0].hdisplay;
-	dev->height = conn->modes[0].vdisplay;
+		/* copy the mode information into our device structure */
+		memcpy(&dev->mode, &conn->modes[0], sizeof(dev->mode));
+		dev->width = conn->modes[0].hdisplay;
+		dev->height = conn->modes[0].vdisplay;
+	}
 	fprintf(stderr, "mode for connector %u is %ux%u\n",
 		conn->connector_id, dev->width, dev->height);
 
@@ -338,7 +350,7 @@ static int modeset_find_crtc(int fd, drmModeRes *res, drmModeConnector *conn,
 			     struct modeset_dev *dev)
 {
 	drmModeEncoder *enc;
-	unsigned int i, j;
+	int i, j;
 	int32_t crtc;
 	struct modeset_dev *iter;
 
@@ -504,6 +516,49 @@ err_destroy:
 }
 
 /*
+ * read a mode from argc/argv
+ */
+
+drmModeModeInfo *args_to_mode(int argc, char *argv[]) {
+	drmModeModeInfo *mode;
+	int a;
+
+	printf("argc = %d\n", argc);
+
+	if (argc - 1 < 1)
+		return NULL;
+
+	if (argc - 1 < 11) {
+		printf("not enough arguments for a mode!\n");
+		exit(1);
+	}
+
+	mode = malloc(sizeof(drmModeModeInfo));
+
+	memset(mode, 0, sizeof(drmModeModeInfo));
+	a = 1;
+	if (! strcmp(argv[a], "Modeline"))
+		a++;
+	if (strchr(argv[a], 'x'))
+		a++;
+	mode->clock = atof(argv[a++]) * 1000;
+	mode->hdisplay = atol(argv[a++]);
+	mode->hsync_start = atol(argv[a++]);
+	mode->hsync_end = atol(argv[a++]);
+	mode->htotal = atol(argv[a++]);
+	mode->vdisplay = atol(argv[a++]);
+	mode->vsync_start = atol(argv[a++]);
+	mode->vsync_end = atol(argv[a++]);
+	mode->vtotal = atol(argv[a++]);
+	mode->flags = 0;
+	mode->flags |= ! strcmp(argv[a], "+hsync") ? DRM_MODE_FLAG_PHSYNC : 0;
+	mode->flags |= ! strcmp(argv[a++], "-hsync") ? DRM_MODE_FLAG_NHSYNC : 0;
+	mode->flags |= ! strcmp(argv[a], "+vsync") ? DRM_MODE_FLAG_PVSYNC : 0;
+	mode->flags |= ! strcmp(argv[a++], "-vsync") ? DRM_MODE_FLAG_NVSYNC : 0;
+	return mode;
+}
+
+/*
  * Finally! We have a connector with a suitable CRTC. We know which mode we want
  * to use and we have a framebuffer of the correct size that we can write to.
  * There is nothing special left to do. We only have to program the CRTC to
@@ -513,7 +568,10 @@ err_destroy:
  *
  * So we are ready for our main() function. First we check whether the user
  * specified a DRM device on the command line, otherwise we use the default
- * /dev/dri/card0. Then we open the device via modeset_open(). modeset_prepare()
+ * /dev/dri/card0. If the user specified a mode in the command line, like in
+ * modeset $(cvt 800 400 75 | grep -v '^#'), this mode will be used.
+ *
+ * We open the device via modeset_open(). modeset_prepare()
  * prepares all connectors and we can loop over "modeset_list" and call
  * drmModeSetCrtc() on every CRTC/connector combination.
  *
@@ -543,14 +601,19 @@ int main(int argc, char **argv)
 	int ret, fd;
 	const char *card;
 	struct modeset_dev *iter;
+	drmModeModeInfo *mode;
 
 	/* check which DRM device to open */
-	if (argc > 1)
-		card = argv[1];
+	if (argc > 1 && ! strcmp(argv[1], "-d")) {
+		card = argv[2];
+		argc-=2;
+		argv+=2;
+	}
 	else
 		card = "/dev/dri/card0";
-
 	fprintf(stderr, "using card '%s'\n", card);
+
+	mode = args_to_mode(argc, argv);
 
 	/* open the DRM device */
 	ret = modeset_open(&fd, card);
@@ -558,7 +621,7 @@ int main(int argc, char **argv)
 		goto out_return;
 
 	/* prepare all connectors and CRTCs */
-	ret = modeset_prepare(fd);
+	ret = modeset_prepare(fd, mode);
 	if (ret)
 		goto out_close;
 
@@ -654,6 +717,15 @@ static void modeset_draw(void)
 					off = iter->stride * j + k * 4;
 					*(uint32_t*)&iter->map[off] =
 						     (r << 16) | (g << 8) | b;
+				}
+			}
+
+			if (iter->height < 110 || iter->width < 110)
+				continue;
+			for (j = 100; j < 110; ++j) {
+				for (k = 100; k < 110; ++k) {
+					off = iter->stride * j + k * 4;
+					*(uint32_t*)&iter->map[off] = 0;
 				}
 			}
 		}
