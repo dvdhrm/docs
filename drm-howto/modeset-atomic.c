@@ -284,6 +284,13 @@ static int modeset_find_crtc(int fd, drmModeRes *res, drmModeConnector *conn,
 			if (crtc > 0) {
 				drmModeFreeEncoder(enc);
 				out->crtc.id = crtc;
+				/* find the CRTC's index */
+				for (i = 0; i < res->count_crtcs; ++i) {
+					if (res->crtcs[i] == crtc) {
+						out->crtc_index = i;
+						break;
+					}
+				}
 				return 0;
 			}
 		}
